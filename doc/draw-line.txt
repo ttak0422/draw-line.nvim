@@ -1,0 +1,80 @@
+*draw-line.txt*          Lines and automatic arrows              *draw-line*
+
+Requires Neovim 0.10+ and a font that displays the drawing glyphs in one cell.
+
+==============================================================================
+API                                                        *draw-line-api*
+
+All functions are on require("draw-line"). Styles apply only to each call;
+omitting a style always uses single. No default mappings are installed.
+
+Functions return true on success or nil, message if the edit cannot be made.
+Invalid arguments, unknown style names and extra arguments raise an error.
+
+draw({direction}, {style}?)                                 *draw-line-draw*
+    Draw one edge and move one cell: h left, j down, k up, l right.
+    A new start uses the style's horizontal or vertical straight glyph.
+    The free tip is an automatic arrow; joining linework produces a junction.
+    Repeat calls to extend or turn the line. See |draw-line-examples|.
+
+box({start}, {finish}, {style}?)                             *draw-line-box*
+    Positions are {row, col}: 1-based buffer rows and display columns.
+    Draw the inclusive rectangle outline, accepting either corner order,
+    and preserve the cursor. Same-row or same-column positions draw a stroke;
+    one cell draws a crossing. Boxes do not add arrows.
+
+box_visual({style}?)                                        *draw-line-box-visual*
+    Draw the live Visual Block (<C-v>) outline. On success enter Normal mode
+    at the top-left corner. Call while the selection is active; it must use
+    selection=inclusive and a fixed end column rather than $.
+
+==============================================================================
+STYLES                                                     *draw-line-styles*
+
+    Name             Weight   Horizontal / vertical    Corners
+    single           light       ─ / │                 ┌┐└┘
+    heavy            heavy       ━ / ┃                 ┏┓┗┛
+    double           double      ═ / ║                 ╔╗╚╝
+    rounded          light       ─ / │                 ╭╮╰╯
+    dashed2          light       ╌ / ╎                 ┌┐└┘
+    dashed3          light       ┄ / ┆                 ┌┐└┘
+    dashed4          light       ┈ / ┊                 ┌┐└┘
+    heavy_dashed2    heavy       ╍ / ╏                 ┏┓┗┛
+    heavy_dashed3    heavy       ┅ / ┇                 ┏┓┗┛
+    heavy_dashed4    heavy       ┉ / ┋                 ┏┓┗┛
+
+The suffix 2, 3 or 4 is the number of dashes per Unicode cell. Dashed styles
+use solid corners and junctions of the same weight.
+
+==============================================================================
+EXAMPLES                                                   *draw-line-examples*
+
+From an empty line: >lua
+    local draw = require("draw-line")
+    draw.draw("l", "dashed3")    -- ┄▶
+    draw.draw("l", "dashed3")    -- ┄┄▶
+<
+Turn a line, starting on another empty line: >lua
+    draw.draw("l", "rounded")
+    draw.draw("l", "rounded")
+    draw.draw("l", "rounded")
+    draw.draw("j", "rounded")
+    draw.draw("j", "rounded")
+<
+    ───╮
+       │
+       ▼
+
+The arrow follows the free tip as the line extends or turns. Retracing existing
+linework removes the arrow until a free end is reached again.
+
+Draw a rectangle in a blank area: >lua
+    draw.box({ 1, 1 }, { 3, 7 }, "double")
+<
+    ╔═════╗
+    ║     ║
+    ╚═════╝
+
+Licensed under the MIT License. Copyright (c) 2026 ttak0422. See LICENSE.
+
+vim:tw=78:ts=8:ft=help:norl:
