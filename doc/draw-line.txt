@@ -75,6 +75,92 @@ Draw a rectangle in a blank area: >lua
     ║     ║
     ╚═════╝
 
+==============================================================================
+EXPERIMENTAL DIAGRAM EDITOR                                 *draw-line-diagram*
+
+An opt-in, in-memory box/connector editor, separate from require("draw-line").
+Neovim 0.10+; tested on stable 0.12.6. No nightly features are required.
+
+Start in a disposable buffer, enabling mouse input and disabling wrap yourself:
+>lua
+    vim.cmd("enew")
+    vim.o.mouse = "a"
+    vim.wo.wrap, vim.wo.conceallevel = false, 0
+    local diagram = assert(require("draw-line.diagram").attach())
+<
+attach() takes the current buffer and returns a session or nil, message.
+It installs Normal-mode buffer-local LeftMouse/LeftDrag/LeftRelease/Esc
+mappings. Attach fails if any of these already has a local mapping. Global
+mappings are temporarily shadowed. The plugin sets no editor options.
+
+SELECT TOOL (default):
+  Drag empty space to make a rectangle (minimum 3 rows and 3 columns).
+  Drag a box's exact center (◆) to move its outline and connected edges.
+  Drag a segment midpoint (●) perpendicular to the segment to adjust bends.
+  Dragging a straight segment inserts bends. Short segments have no handle.
+  Coincident handles select the older edge; box centers take priority.
+  A release commits once. There is no live drag preview.
+
+CONNECT TOOL:
+  Call diagram:set_tool("connect"), then click a source and a target box.
+  An initial route joins facing side centers with orthogonal segments. Boxes
+  need at least 3 blank cells of separation on one axis. Switch back with
+  diagram:set_tool("select"). Esc cancels the pending source or gesture.
+
+SESSION API (all coordinates are 1-based rows and display columns):
+
+  diagram:box({row, col}, {row, col})       -> new box ID or nil, message
+  diagram:connect(source_id, target_id)    -> new edge ID or nil, message
+  diagram:move(box_id, {row, col})         -> true or nil, message
+      The destination is the box's new center.
+  diagram:bend(edge_id, segment, {row,col})-> true or nil, message
+      Segment is a 1-based index in the current simplified orthogonal route.
+      Mouse handles are the intended interface; indices can change after edits.
+  diagram:set_tool("select" / "connect")   -> true or nil, message
+  diagram:cancel()                        -> true
+  diagram:inspect()                       -> graph copy or nil, message
+  diagram:detach()                        -> true
+
+The graph has boxes, edges, and next_id. Each box has id/top/bottom/left/right.
+Each edge has id/source/target/source_side/target_side/waypoints. Anchors are
+derived from side centers. Waypoints use buffer cells; attached terminal
+segments follow moved boxes. These are experimental structures, not a saved
+file format. Methods that read or edit the graph require its buffer to be
+current. Detach retains plain text and removes only the session's own mappings.
+
+SAFETY AND UNDO:
+  One operation, including all connected edges, is one native undo/redo step.
+  Graph snapshots follow native undo sequence numbers while the session lives.
+  Undo must be enabled. Unrelated cells remain byte-identical. New drawing may
+  replace only blank cells or cells already owned by this session. It never
+  adopts existing linework, including drawings made by the original API.
+  A change to an owned glyph, a shift of its display position, or a buffer row
+  count change blocks editing: undo that edit or detach before continuing.
+  Other native text edits are allowed if all owned glyphs stay in place.
+  For labels, use Replace mode to fill interior blanks without shifting edges.
+  Labels remain in their original cells when a box moves; they are not objects.
+
+MOUSE COORDINATES:
+  Requires nowrap, left-to-right, no conceal/diff, and no closed visible folds.
+  Number/sign gutters, split windows, and horizontal/vertical scroll work.
+  Gestures cancel when scrolled/resized, edited, entering Insert mode, leaving
+  their window/buffer, or released outside the original supported text area.
+  Empty space below EOF can extend the buffer. Inline virtual text and virtual
+  lines are unsupported. No autoscroll or dragging between windows.
+
+POC LIMITS:
+  500 by 500 display cells; 10,000 drawing cells; single-weight line style.
+  Boxes cannot overlap/share cells. Edges can cross: a visual junction does
+  not add a connection in the graph. A route crossing any box beyond its own
+  anchor is rejected, without edits. There is no general obstacle router.
+  No object resize/delete, arrowheads, label UI/transport, persistence/import,
+  or draw.io integration. A no-visible-change operation is rejected.
+  Saving writes plain text. The object model and undo snapshots disappear on
+  detach, wipeout, opening a new buffer, or restarting. To freehand-edit with
+  the original drawing API, detach first. Reattach starts with an empty graph
+  and protects old linework. Actual terminal/font appearance is unverified;
+  tests use a separate embedded Neovim with a real UI grid and mouse events.
+
 Licensed under the MIT License. Copyright (c) 2026 ttak0422. See LICENSE.
 
 vim:tw=78:ts=8:ft=help:norl:
