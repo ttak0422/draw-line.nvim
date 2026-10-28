@@ -6,6 +6,7 @@ LUACHECK ?= luacheck
 test:
 	$(NVIM) -n --headless -u NONE -i NONE -l tests/run.lua
 	$(NVIM) -n --headless -u NONE -i NONE -l tests/diagram_mouse.lua
+	$(NVIM) -n --headless -u NONE -i NONE -l tests/diagram_reopen.lua
 
 format:
 	$(STYLUA) lua tests

@@ -111,68 +111,98 @@ See `:help draw-line` for full behavior and error conditions.
 
 ## Experimental mouse diagram editor
 
-An opt-in PoC keeps boxes and orthogonal connectors as objects during one
-buffer session. The original drawing API is unchanged. Try it in a disposable
-buffer with Neovim 0.10+ (tested on stable 0.12.6; no nightly APIs):
+An opt-in PoC edits overlapping boxes and orthogonal connectors as objects.
+The full graph, original text underlay, and stacking order stay separate from
+Unicode projection. The original drawing API is unchanged. Requires Neovim
+0.10+ (tested on stable 0.12.6; no nightly APIs).
 
 ```lua
 vim.cmd("enew")
-vim.o.mouse = "a"        -- Enable mouse input yourself; the plugin changes no options.
-vim.wo.wrap = false
-vim.wo.conceallevel = 0
-local diagram = assert(require("draw-line.diagram").attach())
+vim.o.mouse = "a"        -- The plugin changes no editor options.
+vim.wo.wrap, vim.wo.conceallevel = false, 0
+_G.diagram = assert(require("draw-line.diagram").attach())
 ```
 
-- In Normal mode, drag empty space to create a rectangle of at least 3×3 cells.
-  Releasing the mouse commits the change, without a live preview.
-- Drag the `◆` at a box's exact center to move its outline and attached connectors.
-- Run `diagram:set_tool("connect")`, then click a source box and a different
-  target box. The connector uses the centers of facing sides, with a small gap
-  required between boxes. Use `diagram:set_tool("select")` to resume dragging.
-- Drag a `●` at a line segment's midpoint perpendicular to that segment to
-  change its bend. A straight connector gains bends when its handle is dragged.
-  Short segments have no handle. At a crossing with coincident handles, the
-  older connector wins selection.
-- Press Esc to cancel a gesture or pending connection. Each completed gesture
-  is one native `u` / `<C-r>` step. Scrolling, resizing, leaving the window,
-  starting Insert mode, or editing during a drag cancels it.
-  Clicking another split uses Neovim's native mouse behavior to switch focus.
-- `diagram:detach()` ends the session, removes its mappings and handles, and
-  leaves the drawing as ordinary text. Detach before returning to freehand drawing.
+- Drag empty space in Normal mode to create a rectangle of at least 3×3 cells.
+  Release commits once; there is no live preview. To overlap an existing box,
+  start the drag outside it and finish inside it, or move another box over it.
+- Drag a visible `◆` box center to move the box and its attached connectors.
+  Drag a `●` segment midpoint perpendicular to its line to change the bend.
+- Click an object in the select tool to bring it to the front. A move or bend
+  also raises that object. Other objects retain their relative order. Hit-testing
+  chooses the frontmost object, and hidden handles cannot be grabbed.
+- `diagram:set_tool("connect")` chooses a source and target box with two clicks.
+  Facing side centers become anchors. Endpoint picking leaves their order alone;
+  the new connector is frontmost. Return with `diagram:set_tool("select")`.
+- Esc cancels a pending gesture or connection. Each completed operation, including
+  a stacking-only change, is a native `u` / `<C-r>` step. Native label edits and
+  counted undo/redo follow the correct undo branch. Missing/pruned ancestry blocks
+  further editing instead of guessing a model.
+- Scrolling, resizing, editing, Insert mode, or leaving the original window
+  cancels a drag. Clicks into another split use native mouse navigation.
+- `diagram:detach()` removes this session's mappings and handles, retaining text.
 
-The session temporarily maps Normal-mode `<LeftMouse>`, `<LeftDrag>`,
-`<LeftRelease>`, and `<Esc>` in this buffer. Existing local mappings on these
-keys cause attach to fail; global mappings are shadowed until detach. Mappings
-replaced by the user during the session are left alone on detach.
+Boxes are **opaque to lower diagram geometry**, including their interiors.
+Moving a front box reveals the complete lower boxes/edges again. Boxes and
+connectors share one back-to-front list; moving a box updates connected geometry
+but raises only the box. Crossing edges retain separate identities, and a visual
+intersection never creates a graph connection.
 
-**PoC boundaries:** a 500×500 cell canvas, at most 10,000 drawing cells, single
-line style, no object resize/delete, arrows, general obstacle routing, or file
-format/import. Boxes cannot overlap or share cells. Connectors may cross each
-other; a visual junction does not add a graph connection. Moves that would make
-a connector cross a box are rejected; adjust the bend or move in smaller steps.
-The graph and undo snapshots live in memory. Saving writes plain text only;
-detach, buffer wipeout, reload into a new buffer, or restarting Neovim loses
-object editing. Saved linework is protected, never inferred as objects.
+Native text is a protected underlay, not a box label object. It remains visible
+through box interiors; a contour or connector touching it is rejected. Use
+standard Neovim editing, such as Replace mode within blank cells, for labels.
+Labels stay at their buffer cells when boxes move. Tabs, wide/composing Unicode,
+and unowned linework are protected. Editing an owned glyph, shifting its display
+position, or changing the buffer row count blocks diagram operations until undone.
 
-Use standard Neovim editing for labels (for example, Replace mode to fill blank
-cells without shifting the borders). Labels stay at their buffer positions when
-a box moves. Text, tabs, wide Unicode, composing characters, and unowned linework
-are protected from drawing edits. Changing a drawing cell or the buffer's row
-count blocks further operations until that edit is undone or the session is
-detached. Other edits must leave every owned glyph at the same display cell.
-Undo must be enabled. Session methods edit only their current buffer.
-Native label edits inherit the diagram state on their own undo branch, including
-counted undo/redo. If the needed undo ancestry is pruned, further edits are blocked.
+### Save and resume
 
-Mouse editing needs an unfolded, left-to-right, `nowrap`, unconcealed window
-without diff mode. Number/sign gutters, split windows, and horizontal/vertical
-scrolling are supported. Inline virtual text and virtual lines are outside this
-PoC's mouse coordinate contract. Test in a plain window first. Actual terminal
-mouse reporting and font appearance have not been manually verified.
+Save the text with ordinary `:write`, then save its full object state explicitly:
 
-See `:help draw-line-diagram` for the session API. `make check` runs existing
-drawing tests, diagram safety/undo tests, and mouse events against a separate
-embedded Neovim with a UI grid; it does not connect to a running Neovim.
+```lua
+assert(diagram:save()) -- Creates/updates <buffer filename>.draw-line.json
+```
+
+After reopening the text, with the same display settings:
+
+```lua
+_G.diagram = assert(require("draw-line.diagram").load())
+```
+
+The versioned JSON sidecar contains full hidden geometry, stable object IDs,
+anchors, waypoints, stacking, original text underlay, and a hash of the saved text.
+Carry **both files** when moving to another machine. `attach()` always starts an
+empty graph; it never infers objects from existing text. `load()` requires the
+matching sidecar and does not change text. Detach a live session before loading.
+
+A missing, malformed, incompatible, or mismatched sidecar fails without restoring
+or overwriting anything. Save requires an unmodified named UTF-8 text buffer whose
+bytes match the file. Existing unknown sidecars, external metadata changes,
+concurrent writer locks, and invalid references are rejected. Sidecar replacement
+uses a flushed temporary file and atomic rename. Text `:write` and sidecar `save()`
+are two separate operations: a crash between them can leave a mismatch, which
+`load()` detects and refuses. If sidecar saving fails, keep the live session and
+retry after addressing the error. No text rollback, automatic recovery, or external
+edit merge is performed. Save As writes a new adjacent sidecar, leaving the old one.
+The native undo history starts from the loaded baseline; old-session undo metadata
+is not imported. Sidecars have a 4 MiB limit and must be regular files.
+
+The session maps Normal-mode `<LeftMouse>`, `<LeftDrag>`, `<LeftRelease>`, and
+`<Esc>` only in this buffer. Existing local mappings cause attach/load to fail;
+global mappings are shadowed until detach. User replacements are retained.
+
+**Other PoC boundaries:** 500×500 cells, 100 objects, 10,000 total layer cells
+(including opaque interiors and hidden layers), 128 waypoints per edge, single
+line style, no resize/delete, arrowheads, label transport, transparency picker,
+general obstacle routing, draw.io import, or Hydra integration. Mouse editing
+needs an unfolded, left-to-right, nowrap window without conceal/diff. Number/sign
+gutters, splits, winbars, horizontal/vertical scroll, and EOF extension work.
+Inline virtual text/virtual lines are outside the mouse coordinate contract.
+Actual terminal mouse reporting, tmux, and font appearance remain unverified.
+
+See `:help draw-line-diagram`. `make check` runs the original drawing regressions,
+model/text/persistence safety tests, isolated UI mouse and keyboard events, and
+fresh-process save/reopen tests. It does not connect to a running Neovim.
 
 ## License
 

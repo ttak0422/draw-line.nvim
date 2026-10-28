@@ -16,7 +16,18 @@ local function point(p)
 end
 
 function M.new()
-  return { boxes = {}, edges = {}, next_id = 1 }
+  return { boxes = {}, edges = {}, next_id = 1, z_order = {} }
+end
+
+function M.raise(graph, id)
+  for index, object in ipairs(graph.z_order) do
+    if object == id then
+      table.remove(graph.z_order, index)
+      graph.z_order[#graph.z_order + 1] = id
+      return true
+    end
+  end
+  return nil, "unknown object"
 end
 
 function M.center(box)
@@ -24,6 +35,12 @@ function M.center(box)
 end
 
 function M.box(graph, a, b)
+  if graph.next_id >= 1000000000 then
+    return nil, "object ID limit reached"
+  end
+  if #graph.z_order >= 100 then
+    return nil, "diagram exceeds 100 objects"
+  end
   if not point(a) or not point(b) then
     return nil, "coordinates must be integer cells from 1 to " .. LIMIT
   end
@@ -38,6 +55,7 @@ function M.box(graph, a, b)
     return nil, "boxes need at least 3 rows and 3 columns"
   end
   graph.boxes[box.id], graph.next_id = box, graph.next_id + 1
+  graph.z_order[#graph.z_order + 1] = box.id
   return box.id
 end
 
@@ -96,9 +114,20 @@ function M.route(graph, edge)
 end
 
 function M.connect(graph, source, target)
+  if graph.next_id >= 1000000000 then
+    return nil, "object ID limit reached"
+  end
+  if #graph.z_order >= 100 then
+    return nil, "diagram exceeds 100 objects"
+  end
   local a, b = graph.boxes[source], graph.boxes[target]
   if not a or not b or source == target then
     return nil, "choose two different boxes"
+  end
+  for _, edge in pairs(graph.edges) do
+    if edge.source == source and edge.target == target then
+      return nil, "these boxes already have a connector"
+    end
   end
   local from, to, waypoints
   if a.right + 3 < b.left or b.right + 3 < a.left then
@@ -122,6 +151,7 @@ function M.connect(graph, source, target)
     waypoints = waypoints,
   }
   graph.next_id = id + 1
+  graph.z_order[#graph.z_order + 1] = id
   return id
 end
 
@@ -134,7 +164,7 @@ function M.move(graph, id, destination)
   local dr, dc = destination[1] - center[1], destination[2] - center[2]
   box.top, box.bottom = box.top + dr, box.bottom + dr
   box.left, box.right = box.left + dc, box.right + dc
-  return true
+  return M.raise(graph, id)
 end
 
 function M.bend(graph, id, index, destination)
@@ -183,7 +213,10 @@ function M.bend(graph, id, index, destination)
   for i = 2, #result - 1 do
     edge.waypoints[#edge.waypoints + 1] = result[i]
   end
-  return true
+  if #edge.waypoints > 128 then
+    return nil, "connector exceeds 128 waypoints"
+  end
+  return M.raise(graph, id)
 end
 
 function M.handles(graph)
@@ -208,7 +241,7 @@ function M.handles(graph)
 end
 
 function M.render(graph)
-  local masks, occupied, count = {}, {}, 0
+  local layers, masks, count = {}, {}, 0
   local function add(p, direction)
     if not point(p) then
       error("diagram exceeds the 500 by 500 cell canvas")
@@ -217,13 +250,13 @@ function M.render(graph)
     if not masks[key] then
       count = count + 1
       if count > 10000 then
-        error("diagram exceeds 10000 drawing cells")
+        error("diagram exceeds 10000 layer cells, including opaque interiors")
       end
       masks[key] = { row = p[1], col = p[2], mask = 0 }
     end
     masks[key].mask = bit.bor(masks[key].mask, direction)
   end
-  local function segment(a, b, edge)
+  local function segment(a, b)
     if not point(a) or not point(b) or (a[1] ~= b[1] and a[2] ~= b[2]) then
       error("connector is no longer orthogonal; undo the move or reconnect")
     end
@@ -234,16 +267,6 @@ function M.render(graph)
     local length = math.abs(a[1] - b[1]) + math.abs(a[2] - b[2])
     for step = 0, length do
       local p = { a[1] + dr * step, a[2] + dc * step }
-      if edge then
-        local owner = occupied[p[1] .. ":" .. p[2]]
-        if owner then
-          local at_source = owner == edge.source and vim.deep_equal(p, anchor(graph.boxes[owner], edge.source_side))
-          local at_target = owner == edge.target and vim.deep_equal(p, anchor(graph.boxes[owner], edge.target_side))
-          if not at_source and not at_target then
-            error("connector would cross a box; move a segment or the box first")
-          end
-        end
-      end
       if step < length then
         add(p, outward)
       end
@@ -253,17 +276,15 @@ function M.render(graph)
     end
   end
   local ok, message = pcall(function()
-    for _, box in pairs(graph.boxes) do
+    for id, box in pairs(graph.boxes) do
       if not point({ box.top, box.left }) or not point({ box.bottom, box.right }) then
         error("box exceeds the 500 by 500 cell canvas")
       end
+      masks = {}
+      layers[id] = masks
       for row = box.top, box.bottom do
         for col = box.left, box.right do
-          local key = row .. ":" .. col
-          if occupied[key] then
-            error("boxes cannot overlap or touch")
-          end
-          occupied[key] = box.id
+          add({ row, col }, 0)
         end
       end
       segment({ box.top, box.left }, { box.top, box.right })
@@ -271,27 +292,43 @@ function M.render(graph)
       segment({ box.top, box.left }, { box.bottom, box.left })
       segment({ box.top, box.right }, { box.bottom, box.right })
     end
-    for _, edge in pairs(graph.edges) do
+    for id, edge in pairs(graph.edges) do
+      masks = {}
+      layers[id] = masks
       local points = M.route(graph, edge)
       for i = 1, #points - 1 do
-        segment(points[i], points[i + 1], edge)
+        segment(points[i], points[i + 1])
+      end
+      for _, endpoint in ipairs({ { edge.source, edge.source_side }, { edge.target, edge.target_side } }) do
+        local p = anchor(graph.boxes[endpoint[1]], endpoint[2])
+        local key = p[1] .. ":" .. p[2]
+        if masks[key] then
+          masks[key].mask = bit.bor(masks[key].mask, layers[endpoint[1]][key].mask)
+        end
       end
     end
   end)
   if not ok then
     return nil, tostring(message):gsub("^.-:%d+: ", "")
   end
-  for _, cell in pairs(masks) do
-    local edges = {}
-    for _, direction in ipairs(glyphs.directions) do
-      if bit.band(cell.mask, direction) ~= 0 then
-        edges[direction] = 1
+  local cells = {}
+  for _, id in ipairs(graph.z_order) do
+    for key, cell in pairs(layers[id]) do
+      local edges = {}
+      for _, direction in ipairs(glyphs.directions) do
+        if bit.band(cell.mask, direction) ~= 0 then
+          edges[direction] = 1
+        end
       end
+      cells[key] = {
+        row = cell.row,
+        col = cell.col,
+        owner = id,
+        glyph = cell.mask == 0 and " " or glyphs.by_edges[glyphs.key(edges)],
+      }
     end
-    cell.glyph = glyphs.by_edges[glyphs.key(edges)]
-    cell.mask = nil
   end
-  return masks
+  return cells
 end
 
 return M

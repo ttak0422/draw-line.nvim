@@ -78,7 +78,7 @@ Draw a rectangle in a blank area: >lua
 ==============================================================================
 EXPERIMENTAL DIAGRAM EDITOR                                 *draw-line-diagram*
 
-An opt-in, in-memory box/connector editor, separate from require("draw-line").
+An opt-in box/connector editor, separate from require("draw-line").
 Neovim 0.10+; tested on stable 0.12.6. No nightly features are required.
 
 Start in a disposable buffer, enabling mouse input and disabling wrap yourself:
@@ -86,84 +86,123 @@ Start in a disposable buffer, enabling mouse input and disabling wrap yourself:
     vim.cmd("enew")
     vim.o.mouse = "a"
     vim.wo.wrap, vim.wo.conceallevel = false, 0
-    local diagram = assert(require("draw-line.diagram").attach())
+    _G.diagram = assert(require("draw-line.diagram").attach())
 <
 attach() takes the current buffer and returns a session or nil, message.
 It installs Normal-mode buffer-local LeftMouse/LeftDrag/LeftRelease/Esc
-mappings. Attach fails if any of these already has a local mapping. Global
-mappings are temporarily shadowed. The plugin sets no editor options.
+mappings. Attach fails if any already has a local mapping. Global mappings
+are shadowed until detach. The plugin changes no editor options.
 
 SELECT TOOL (default):
-  Drag empty space to make a rectangle (minimum 3 rows and 3 columns).
-  Drag a box's exact center (◆) to move its outline and connected edges.
-  Drag a segment midpoint (●) perpendicular to the segment to adjust bends.
-  Dragging a straight segment inserts bends. Short segments have no handle.
-  Coincident handles select the older edge; box centers take priority.
-  A release commits once. There is no live drag preview.
+  Drag empty space for a rectangle (minimum 3 rows/3 columns). To overlap an
+  object, start outside it and finish inside it, or move another box over it.
+  Drag a visible box center (◆) to move its outline and attached connectors.
+  Drag a visible segment midpoint (●) perpendicular to the line for bends.
+  A straight segment gains bends. Short/hidden segments have no visible handle.
+  Click an object to raise it. Moves/bends also raise their object. Selection
+  is front-to-back; only the chosen object moves to the front, preserving the
+  others' order. Release commits once, including a stacking-only change.
+  There is no live preview. Esc cancels the gesture or pending connection.
 
 CONNECT TOOL:
-  Call diagram:set_tool("connect"), then click a source and a target box.
-  An initial route joins facing side centers with orthogonal segments. Boxes
-  need at least 3 blank cells of separation on one axis. Switch back with
-  diagram:set_tool("select"). Esc cancels the pending source or gesture.
+  diagram:set_tool("connect"), then click source and target boxes.
+  Facing side centers are anchors. Initial routing needs at least 3 blank
+  cells of separation on one axis. Picking endpoints does not reorder them;
+  the new edge is frontmost. Return with diagram:set_tool("select").
 
-SESSION API (all coordinates are 1-based rows and display columns):
+OPAQUE LAYERS AND TEXT:
+  Full box/edge geometry is retained even while hidden. Box interiors mask
+  lower diagram geometry. Moving a box reveals the complete lower geometry.
+  Edges and boxes share one back-to-front list. Box movement updates attached
+  edges but only raises the box; untouched edges keep their relative order.
+  Edge crossings do not add graph connections. No obstacle router is provided.
 
-  diagram:box({row, col}, {row, col})       -> new box ID or nil, message
-  diagram:connect(source_id, target_id)    -> new edge ID or nil, message
-  diagram:move(box_id, {row, col})         -> true or nil, message
-      The destination is the box's new center.
-  diagram:bend(edge_id, segment, {row,col})-> true or nil, message
-      Segment is a 1-based index in the current simplified orthogonal route.
-      Mouse handles are the intended interface; indices can change after edits.
-  diagram:set_tool("select" / "connect")   -> true or nil, message
-  diagram:cancel()                        -> true
-  diagram:inspect()                       -> graph copy or nil, message
-  diagram:detach()                        -> true
+  Native text is a separate protected underlay: labels stay visible through
+  interiors, and a new contour/connector touching them fails atomically.
+  Labels remain in their buffer cells when a box moves. There is no label UI
+  or association/transport. Use normal editing such as Replace mode to fill
+  interior blanks without shifting drawing cells. Tabs, wide/composing Unicode,
+  and unowned linework are protected. Editing an owned glyph or changing row
+  count blocks operations until undone. No hidden text is guessed from glyphs.
 
-The graph has boxes, edges, and next_id. Each box has id/top/bottom/left/right.
-Each edge has id/source/target/source_side/target_side/waypoints. Anchors are
-derived from side centers. Waypoints use buffer cells; attached terminal
-segments follow moved boxes. These are experimental structures, not a saved
-file format. Methods that read or edit the graph require its buffer to be
-current. Detach retains plain text and removes only the session's own mappings.
+SESSION API (1-based buffer rows and display columns):
+  diagram:box({row, col}, {row, col})        -> box ID or nil, message
+  diagram:connect(source_id, target_id)     -> edge ID or nil, message
+  diagram:move(box_id, {row, col})          -> true or nil, message
+      Destination is the new center. The box becomes frontmost.
+  diagram:bend(edge_id, segment, {row,col}) -> true or nil, message
+      Segment is a 1-based index in the simplified route and may change after
+      edits. Mouse handles are the intended interface. The edge becomes frontmost.
+  diagram:raise(object_id)                 -> true or nil, message
+  diagram:set_tool("select" / "connect")    -> true or nil, message
+  diagram:cancel()                         -> true
+  diagram:inspect()                        -> graph copy or nil, message
+  diagram:save()                           -> true, sidecar path or nil, message
+  diagram:detach()                         -> true
 
-SAFETY AND UNDO:
-  One operation, including all connected edges, is one native undo/redo step.
-  Graph snapshots follow native undo sequence numbers while the session lives.
-  Native text edits inherit the nearest diagram snapshot on their undo branch,
-  including counted undo/redo. Missing/pruned ancestry blocks further editing.
-  Undo must be enabled. Unrelated cells remain byte-identical. New drawing may
-  replace only blank cells or cells already owned by this session. It never
-  adopts existing linework, including drawings made by the original API.
-  A change to an owned glyph, a shift of its display position, or a buffer row
-  count change blocks editing: undo that edit or detach before continuing.
-  Other native text edits are allowed if all owned glyphs stay in place.
-  For labels, use Replace mode to fill interior blanks without shifting edges.
-  Labels remain in their original cells when a box moves; they are not objects.
+Graph: boxes, edges, next_id, z_order (back-to-front IDs). A box has
+id/top/bottom/left/right. An edge has id/source/target/source_side/target_side/
+waypoints. Anchors derive from side centers. All graph reads/edits require the
+session buffer to be current. Detach leaves text and removes only owned mappings.
 
-MOUSE COORDINATES:
-  Requires nowrap, left-to-right, no conceal/diff, and no closed visible folds.
-  Number/sign gutters, split windows, and horizontal/vertical scroll work.
-  Gestures cancel when scrolled/resized, edited, entering Insert mode, leaving
-  their window/buffer, or released outside the original supported text area.
-  Empty space below EOF can extend the buffer. Inline virtual text and virtual
-  lines are unsupported. No autoscroll or dragging between windows.
-  Clicks in another split use native mouse behavior to switch focus; a diagram
-  drag released outside its original window cancels without editing either buffer.
+SAVE/LOAD                                       *draw-line-diagram-persistence*
+  First :write the ordinary text file. Then:
+>lua
+    assert(diagram:save())
+<
+  Explicitly writes <buffer filename>.draw-line.json. UTF-8 with unix/dos
+  line endings is supported; the unmodified buffer must match file bytes.
+  After reopening the text with compatible display settings:
+>lua
+    _G.diagram = assert(require("draw-line.diagram").load())
+<
+  load() returns a new session or nil, message. It validates schema version,
+  saved text hash, references, limits, display settings, and exact projection
+  before attaching. It never edits text. Detach before loading into a live
+  session. attach() always starts empty and protects existing linework.
 
-POC LIMITS:
-  500 by 500 display cells; 10,000 drawing cells; single-weight line style.
-  Boxes cannot overlap/share cells. Edges can cross: a visual junction does
-  not add a connection in the graph. A route crossing any box beyond its own
-  anchor is rejected, without edits. There is no general obstacle router.
-  No object resize/delete, arrowheads, label UI/transport, persistence/import,
-  or draw.io integration. A no-visible-change operation is rejected.
-  Saving writes plain text. The object model and undo snapshots disappear on
-  detach, wipeout, opening a new buffer, or restarting. To freehand-edit with
-  the original drawing API, detach first. Reattach starts with an empty graph
-  and protects old linework. Actual terminal/font appearance is unverified;
-  tests use a separate embedded Neovim with a real UI grid and mouse events.
+  The adjacent JSON sidecar carries the complete graph (including occluded
+  geometry), original text underlay, stable document/object IDs, anchors,
+  waypoints, z-order, revision, display settings, and saved text hash. Copy or
+  rename BOTH files for portability. No machine-local cache is required.
+  Save As writes the new path's sidecar and retains the old path's sidecar.
+  Unknown existing sidecars are never overwritten by a newly attached session.
+
+  Missing, malformed, unknown-version, or mismatched sidecars stop loading.
+  External text/metadata changes and existing writer locks stop saving. Invalid
+  references/oversized data are rejected. No automatic merge or recovery.
+  Sidecar replacement uses an exclusive writer lock, flushed temporary file,
+  and atomic rename. Failed preparation/rename preserves prior metadata and
+  cleans only this save's temporary files. An orphaned lock needs inspection;
+  the plugin never removes another writer's lock.
+  Text :write and sidecar save are separate operations, not an atomic pair.
+  A crash/failure between them can leave a mismatch, which load refuses. Keep
+  a live session after a save error and retry; no text rollback is performed.
+  Sidecars and text must be regular files of at most 4 MiB. No code is executed
+  from JSON. Transparency/line-style options are not part of this schema yet.
+
+UNDO:
+  Operations, including metadata-only raises, create native undo blocks.
+  Native label edits inherit the correct diagram snapshot on their own undo
+  branch, including counted undo/redo. Unknown/pruned ancestry stops editing.
+  Underlay and z-order follow the same snapshot as geometry. Undo must be enabled.
+  Loading establishes a new session baseline; prior-session graph undo history
+  is not imported from a native undofile. Undoing before a known baseline can
+  stop diagram editing until redone or detached.
+
+MOUSE AND LIMITS:
+  Requires nowrap, left-to-right, no conceal/diff or closed visible folds.
+  Number/sign gutters, split windows, winbars, and vertical/horizontal scroll
+  work. Blank space below EOF can extend the buffer. Inline virtual text/lines,
+  autoscroll, and dragging between windows are unsupported.
+  Scrolling/resizing/editing/Insert/leaving the original window cancels a drag.
+  Clicks into another split use native mouse navigation; external release of
+  a diagram drag cancels without editing either buffer.
+  500 by 500 cells, 100 objects, 10,000 total layer cells including opaque and
+  hidden cells, 128 waypoints per edge, single-weight lines. No resize/delete,
+  arrowheads, label transport, transparency picker, general obstacle routing,
+  draw.io import, or Hydra integration. Actual terminal mouse/tmux/font behavior
+  remains unverified. Tests use isolated UI events and fresh-process reopening.
 
 Licensed under the MIT License. Copyright (c) 2026 ttak0422. See LICENSE.
 
