@@ -381,6 +381,8 @@ local context = {
 dofile(root .. "/tests/mixed.lua")(context)
 dofile(root .. "/tests/glyphs.lua")(context)
 dofile(root .. "/tests/arrows.lua")(context)
+dofile(root .. "/tests/diagram.lua")(context)
+dofile(root .. "/tests/diagram_documents.lua")(context)
 
 test("normal mappings connect to mixed-weight boxes and undo each step", function()
   fresh({ "   ╔═╗", "   ║ ║", "   ╚═╝" })
