@@ -94,6 +94,20 @@ local function remember(session)
   }
 end
 
+local function ancestor_snapshot(entries, sequence_id, history, inherited)
+  for _, entry in ipairs(entries) do
+    -- Alternate branches share the preceding entry, not this entry's state.
+    local alternate = entry.alt and ancestor_snapshot(entry.alt, sequence_id, history, inherited)
+    if alternate then
+      return alternate
+    end
+    inherited = history[entry.seq] or inherited
+    if entry.seq == sequence_id then
+      return inherited
+    end
+  end
+end
+
 local function sync(session)
   if not sessions[session.buf] or sessions[session.buf] ~= session or not api.nvim_buf_is_loaded(session.buf) then
     return fail("session is detached")
@@ -102,17 +116,25 @@ local function sync(session)
     return fail("switch to the session's buffer before editing its diagram")
   end
   local current = lines(session.buf)
-  local saved = session.history[sequence(session.buf)]
-  if saved and vim.deep_equal(current, saved.lines) then
-    session.graph, session.cells = vim.deepcopy(saved.graph), vim.deepcopy(saved.cells)
-    session.row_count = #current
-  elseif #current ~= session.row_count then
+  local tree = fn.undotree()
+  local oldest = tree.entries[1]
+  while oldest and oldest.alt do
+    oldest = oldest.alt[1]
+  end
+  -- A pruned tree has an unknown base; do not assume the diagram was empty.
+  local base = oldest and oldest.seq == 1 and session.history[0] or nil
+  local saved = session.history[tree.seq_cur] or ancestor_snapshot(tree.entries, tree.seq_cur, session.history, base)
+  if not saved then
+    return fail("diagram undo history is unavailable; detach before continuing")
+  end
+  if #current ~= #saved.lines then
     return fail("buffer row count changed; undo the edit or detach before continuing")
   end
-  local ok, message = project(current, session.cells, session.cells)
+  local ok, message = project(current, saved.cells, saved.cells)
   if not ok then
     return nil, message
   end
+  session.graph, session.cells = vim.deepcopy(saved.graph), vim.deepcopy(saved.cells)
   return true
 end
 
@@ -189,7 +211,7 @@ local function commit(session, mutate)
   if not ok then
     return fail(tostring(message))
   end
-  session.graph, session.cells, session.row_count = graph, cells, #after
+  session.graph, session.cells = graph, cells
   remember(session)
   decorate(session)
   return value
@@ -220,8 +242,14 @@ local function mouse_point(session)
   local info = fn.getwininfo(win)[1]
   -- Screen columns include number/sign/fold gutters; use the actual text origin.
   local col = mouse.screencol - position[2] - info.textoff
-  local row = mouse.line
-  if col < 1 or col > api.nvim_win_get_width(win) - info.textoff or row < 1 then
+  local textrow = mouse.screenrow - info.winrow - info.winbar + 1
+  if
+    col < 1
+    or col > api.nvim_win_get_width(win) - info.textoff
+    or mouse.line < 1
+    or textrow < 1
+    or textrow > info.height
+  then
     return nil
   end
   local supported = api.nvim_win_call(win, function()
@@ -235,12 +263,9 @@ local function mouse_point(session)
   if not supported then
     return nil
   end
-  if row == api.nvim_buf_line_count(session.buf) then
-    local last = fn.screenpos(win, row, 1)
-    if last.row > 0 and mouse.screenrow > last.row then
-      row = row + mouse.screenrow - last.row
-    end
-  end
+  -- In an unfolded nowrap window, rows include blank space below EOF, even
+  -- when horizontal scrolling makes screenpos(..., 1) unavailable.
+  local row = info.topline + textrow - 1
   local v = view(win)
   return { row, col + v[2] }, win, v
 end
@@ -280,7 +305,7 @@ function M.attach()
       end
     end
   end
-  local session = { buf = buf, graph = model.new(), cells = {}, history = {}, row_count = #lines(buf), tool = "select" }
+  local session = { buf = buf, graph = model.new(), cells = {}, history = {}, tool = "select" }
   sessions[buf] = session
 
   function session:cancel()
@@ -384,7 +409,7 @@ function M.attach()
       or api.nvim_buf_get_changedtick(self.buf) ~= gesture.tick
     then
       self:cancel()
-      return fail("gesture cancelled after leaving its window, scrolling, resizing, or editing")
+      return true
     end
     if action == "drag" then
       return true
@@ -401,13 +426,29 @@ function M.attach()
     return self:box(gesture.start, p)
   end
 
-  local callbacks = {}
+  local callbacks, native_mouse = {}, false
   for key, action in pairs({ ["<LeftMouse>"] = "press", ["<LeftDrag>"] = "drag", ["<LeftRelease>"] = "release" }) do
     callbacks[key] = function()
+      if action == "press" then
+        local mouse = fn.getmousepos()
+        native_mouse = mouse.winid ~= api.nvim_get_current_win() or mouse.line == 0
+        if native_mouse then
+          session:cancel()
+        end
+      end
+      if native_mouse then
+        if action == "release" then
+          native_mouse = false
+        end
+        -- Replay the native mouse action with its original position, without remapping.
+        vim.cmd("normal! " .. api.nvim_replace_termcodes(key, true, false, true))
+        return
+      end
       report(session:mouse(action))
     end
   end
   callbacks["<Esc>"] = function()
+    native_mouse = false
     session:cancel()
   end
   for key, callback in pairs(callbacks) do

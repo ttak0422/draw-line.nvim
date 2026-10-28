@@ -131,6 +131,8 @@ current. Detach retains plain text and removes only the session's own mappings.
 SAFETY AND UNDO:
   One operation, including all connected edges, is one native undo/redo step.
   Graph snapshots follow native undo sequence numbers while the session lives.
+  Native text edits inherit the nearest diagram snapshot on their undo branch,
+  including counted undo/redo. Missing/pruned ancestry blocks further editing.
   Undo must be enabled. Unrelated cells remain byte-identical. New drawing may
   replace only blank cells or cells already owned by this session. It never
   adopts existing linework, including drawings made by the original API.
@@ -147,6 +149,8 @@ MOUSE COORDINATES:
   their window/buffer, or released outside the original supported text area.
   Empty space below EOF can extend the buffer. Inline virtual text and virtual
   lines are unsupported. No autoscroll or dragging between windows.
+  Clicks in another split use native mouse behavior to switch focus; a diagram
+  drag released outside its original window cancels without editing either buffer.
 
 POC LIMITS:
   500 by 500 display cells; 10,000 drawing cells; single-weight line style.

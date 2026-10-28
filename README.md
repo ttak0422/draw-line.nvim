@@ -136,6 +136,7 @@ local diagram = assert(require("draw-line.diagram").attach())
 - Press Esc to cancel a gesture or pending connection. Each completed gesture
   is one native `u` / `<C-r>` step. Scrolling, resizing, leaving the window,
   starting Insert mode, or editing during a drag cancels it.
+  Clicking another split uses Neovim's native mouse behavior to switch focus.
 - `diagram:detach()` ends the session, removes its mappings and handles, and
   leaves the drawing as ordinary text. Detach before returning to freehand drawing.
 
@@ -160,6 +161,8 @@ are protected from drawing edits. Changing a drawing cell or the buffer's row
 count blocks further operations until that edit is undone or the session is
 detached. Other edits must leave every owned glyph at the same display cell.
 Undo must be enabled. Session methods edit only their current buffer.
+Native label edits inherit the diagram state on their own undo branch, including
+counted undo/redo. If the needed undo ancestry is pruned, further edits are blocked.
 
 Mouse editing needs an unfolded, left-to-right, `nowrap`, unconcealed window
 without diff mode. Number/sign gutters, split windows, and horizontal/vertical
